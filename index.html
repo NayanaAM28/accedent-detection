@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Emergency Control Room Map Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            background-color: #f4f6f7;
+        }
+
+        #sidebar {
+            width: 380px;
+            background: #2c3e50;
+            color: white;
+            padding: 25px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            box-shadow: 4px 0 15px rgba(0, 0, 0, 0.3);
+            z-index: 1000;
+            overflow-y: auto;
+        }
+
+        #map {
+            flex-grow: 1;
+            height: 100%;
+        }
+
+        .card {
+            background: #34495e;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 5px solid #2ecc71;
+            transition: all 0.3s ease;
+            margin-bottom: 12px;
+        }
+
+        .emergency-active {
+            border-left-color: #e74c3c !important;
+            background: #c0392b !important;
+            animation: blinker 1.5s linear infinite;
+        }
+
+        input,
+        button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 8px;
+            border-radius: 5px;
+            border: none;
+            box-sizing: border-box;
+        }
+
+        button {
+            background: #3498db;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            background: #2980b9;
+        }
+
+        h2,
+        h3 {
+            margin: 0;
+            padding-bottom: 5px;
+        }
+
+        @keyframes blinker {
+            50% {
+                opacity: 0.8;
+            }
+        }
+
+        .search-status {
+            font-size: 0.85em;
+            margin-top: 8px;
+            display: block;
+            font-weight: bold;
+            color: #bdc3c7;
+        }
+
+        .signal-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            font-size: 0.9em;
+            border-bottom: 1px dashed #465d75;
+        }
+
+        .status-badge {
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="sidebar">
+        <h2>🚨 Emergency System</h2>
+        <hr style="border-color: #465d75; width: 100%;">
+
+        <div class="card" style="border-left-color: #9b59b6;">
+            <h3>🔍 Track Specific Vehicle</h3>
+            <input type="text" id="searchVehicleReg" placeholder="Enter Vehicle Reg (e.g., KA-09-MA-1234)">
+            <button style="background: #9b59b6; color: white;" onclick="setTrackedVehicle()">Focus & Track Vehicle</button>
+            <button style="background: #7f8c8d; color: white; margin-top: 5px;" onclick="clearTrackedVehicle()">Show All Vehicles</button>
+            <span id="searchStatusLabel" class="search-status">📋 Currently viewing global fleet overview.</span>
+        </div>
+
+        <div class="card" style="border-left-color: #e67e22;">
+            <h3>🚥 Traffic Signal Monitor</h3>
+            <div id="signalStatusContainer">
+                <p>Analyzing active intersections...</p>
+            </div>
+            <hr style="border-color: #465d75; margin: 10px 0;">
+            <h4 style="margin: 0 0 5px 0;">🗺️ Recommended Navigation Path:</h4>
+            <div id="routeRecommendation" style="font-weight: bold; padding: 8px; border-radius: 4px; background: #2c3e50; text-align: center; color: #2ecc71;">
+                Calculating optimal route...
+            </div>
+        </div>
+
+        <div id="fleetStatusContainer"></div>
+
+        <div class="card" style="border-left-color: #f1c40f;">
+            <h3>🚗 Add / Register Active Vehicle</h3>
+            <input type="text" id="regDeviceID" placeholder="Hardware Device ID (e.g., VVCE-09)">
+            <input type="text" id="regPlateNo" placeholder="Vehicle Reg Number (e.g., KA-09-MA-1234)">
+            <button style="background: #f1c40f; color: #2c3e50;" onclick="registerNewVehicleAsset()">Link & Enroll Vehicle</button>
+        </div>
+
+        <div class="card" style="border-left-color: #3498db;">
+            <h3>➕ Add Hospital / Station</h3>
+            <input type="text" id="hospName" placeholder="Station Name (e.g., Apollo Hospital)">
+            <input type="text" id="hospLat" placeholder="Latitude (e.g., 12.2925)">
+            <input type="text" id="hospLng" placeholder="Longitude (e.g., 76.6322)">
+            <button onclick="addNewHospital()">Save & Mark on Map</button>
+        </div>
+    </div>
+    <div id="map"></div>
+
+    <script>
+        let audioCtx = null;
+        let alarmLoop = null;
+
+        function triggerWebBuzzer() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (alarmLoop) return;
+
+            alarmLoop = setInterval(() => {
+                let osc = audioCtx.createOscillator();
+                let gainNode = audioCtx.createGain();
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(950, audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                osc.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.2);
+            }, 500);
+        }
+
+        function silenceWebBuzzer() {
+            if (alarmLoop) {
+                clearInterval(alarmLoop);
+                alarmLoop = null;
+            }
+        }
+    </script>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map').setView([12.2958, 76.6394], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        L.marker([12.3010, 76.6420]).addTo(map).bindPopup("<b>🚔 Core Police Station HQ</b>");
+        L.marker([12.2925, 76.6322]).addTo(map).bindPopup("<b>🏥 Apollo Hospital Hub</b>");
+
+        let trackingVehicleMarkers = {};
+        let vehicleMovementLines = {};  // Stores movement path histories
+        let accidentPoints = {};        // Fixed permanent red point registry
+        let signalCircles = {}; 
+        let trackedVehicleReg = "";
+
+        function calculateProximityKM(lat1, lon1, lat2, lon2) {
+            const R = 6371;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+        }
+
+        function setTrackedVehicle() {
+            const inputVal = document.getElementById('searchVehicleReg').value.trim();
+            if (inputVal) {
+                trackedVehicleReg = inputVal;
+                document.getElementById('searchStatusLabel').innerHTML = `🎯 Locked on target asset: <span style="color: #2ecc71;">${trackedVehicleReg}</span>`;
+            } else {
+                document.getElementById('searchStatusLabel').innerHTML = `⚠️ <span style="color: #e74c3c;">Please enter a valid registration plate number.</span>`;
+            }
+        }
+
+        function clearTrackedVehicle() {
+            trackedVehicleReg = "";
+            document.getElementById('searchVehicleReg').value = "";
+            document.getElementById('searchStatusLabel').innerHTML = "📋 Filter cleared. Monitoring global fleet overview.";
+        }
+
+        async function registerNewVehicleAsset() {
+            const deviceId = document.getElementById('regDeviceID').value.trim();
+            const plateNo = document.getElementById('regPlateNo').value.trim();
+
+            if (!deviceId || !plateNo) {
+                alert("Please input values into both fields.");
+                return;
+            }
+
+            try {
+                const response = await fetch('http://127.0.0.1:8000/api/register_vehicle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ device_id: deviceId, vehicle_reg: plateNo })
+                });
+
+                if (response.ok) {
+                    alert(`Asset Linked Successfully!\nHardware ID: ${deviceId} ➡️ Plate Number: ${plateNo}`);
+                    document.getElementById('regDeviceID').value = '';
+                    document.getElementById('regPlateNo').value = '';
+                } else {
+                    alert("Server rejected registration parameters.");
+                }
+            } catch (e) {
+                alert("Connection error. Make sure your application server is running on port 8000.");
+            }
+        }
+
+        function addNewHospital() {
+            const name = document.getElementById('hospName').value;
+            const lat = parseFloat(document.getElementById('hospLat').value);
+            const lng = parseFloat(document.getElementById('hospLng').value);
+
+            if (name && !isNaN(lat) && !isNaN(lng)) {
+                L.marker([lat, lng]).addTo(map)
+                    .bindPopup(`<b>🏥 Active Medical Station:</b><br>${name}`).openPopup();
+            } else { alert("Please fill in accurate numeric coordinate data fields."); }
+        }
+
+        setInterval(async () => {
+            try {
+                const response = await fetch('http://127.0.0.1:8000/api/get_state');
+                const fleetData = await response.json();
+
+                let signals = {
+                    "Alpha": { name: "Signal Alpha (Tech Circle)", lat: 12.2960, lng: 76.6395, vehicles: 0, isBlocked: false, score: 0 },
+                    "Beta": { name: "Signal Beta (Boulevard St)", lat: 12.2972, lng: 76.6408, vehicles: 0, isBlocked: false, score: 0 },
+                    "Gamma": { name: "Signal Gamma (Bypass Highway)", lat: 12.2985, lng: 76.6425, vehicles: 0, isBlocked: false, score: 0 }
+                };
+
+                const container = document.getElementById('fleetStatusContainer');
+                if (!fleetData || Object.keys(fleetData).length === 0) return;
+
+                let updatedHTML = "";
+                let structuralCrashTrigger = false;
+
+                for (const [id, target] of Object.entries(fleetData)) {
+                    const targetCoordinates = [Number(target.latitude), Number(target.longitude)];
+
+                    // FEATURE: Vehicle Movement Path Tracking
+                    if (!trackingVehicleMarkers[id]) {
+                        trackingVehicleMarkers[id] = L.marker(targetCoordinates).addTo(map);
+                        // Initialize a unique polyline array instance for path history traces
+                        vehicleMovementLines[id] = L.polyline([targetCoordinates], {
+                            color: '#2980b9',
+                            weight: 4,
+                            opacity: 0.75
+                        }).addTo(map);
+                    } else {
+                        trackingVehicleMarkers[id].setLatLng(targetCoordinates);
+                        // Append next sequential step point to trace the ongoing tracking route live
+                        vehicleMovementLines[id].addLatLng(targetCoordinates);
+                    }
+
+                    trackingVehicleMarkers[id].bindPopup(`<b>🚗 Vehicle Reg: ${target.vehicle_reg}</b><br>Status: ${target.status}`);
+
+                    let closestSignalKey = null;
+                    let minDistance = Infinity;
+                    for (const [key, sig] of Object.entries(signals)) {
+                        let d = calculateProximityKM(targetCoordinates[0], targetCoordinates[1], sig.lat, sig.lng);
+                        if (d < minDistance) {
+                            minDistance = d;
+                            closestSignalKey = key;
+                        }
+                    }
+
+                    if (closestSignalKey && minDistance < 0.35) {
+                        signals[closestSignalKey].vehicles += 1;
+                        if (target.status === "Emergency") {
+                            signals[closestSignalKey].isBlocked = true;
+                        }
+                    }
+
+                    let matchesSearch = !trackedVehicleReg || target.vehicle_reg.toLowerCase().includes(trackedVehicleReg.toLowerCase());
+
+                    let stateStyleCard = "card";
+                    
+                    // FEATURE: Drop fixed red point when accident happens
+                    if (target.status === "Emergency") {
+                        structuralCrashTrigger = true;
+                        stateStyleCard = "card emergency-active";
+
+                        if (trackingVehicleMarkers[id].getElement()) {
+                            trackingVehicleMarkers[id].getElement().style.filter = "hue-rotate(140deg) saturate(8) brightness(0.9)";
+                        }
+
+                        // Generate permanent red node on map view layer at the point of collision impact
+                        if (!accidentPoints[id]) {
+                            accidentPoints[id] = L.circleMarker(targetCoordinates, {
+                                radius: 12,
+                                fillColor: '#e74c3c',
+                                color: '#c0392b',
+                                weight: 3,
+                                fillOpacity: 0.9,
+                                zIndexOffset: 2000
+                            }).addTo(map);
+
+                            accidentPoints[id].bindPopup(`
+                                <b style="color:#c0392b;">🚨 CRITICAL IMPACT DETECTED</b><br>
+                                <b>Vehicle:</b> ${target.vehicle_reg}<br>
+                                <b>Location:</b> ${target.latitude}, ${target.longitude}
+                            `).openPopup();
+
+                            // Pulse radius circle indicator highlight background frame anchor
+                            L.circle(targetCoordinates, { radius: 80, color: 'red', weight: 1.5, fillOpacity: 0.15 }).addTo(map);
+                        }
+
+                        if (matchesSearch) {
+                            map.setView(targetCoordinates, 16);
+                        }
+                    } else {
+                        if (trackingVehicleMarkers[id].getElement()) {
+                            trackingVehicleMarkers[id].getElement().style.filter = "none";
+                        }
+                    }
+
+                    if (trackedVehicleReg && matchesSearch) {
+                        if (target.status !== "Emergency") {
+                            map.setView(targetCoordinates, map.getZoom());
+                        }
+                        trackingVehicleMarkers[id].openPopup();
+                    }
+
+                    if (matchesSearch) {
+                        let crashAlertLine = target.status === "Emergency" ? `<p>🏥 Emergency Dispatch: <span style="font-weight:bold; text-decoration:underline;">${target.nearest_hospital_alert}</span></p>` : '';
+                        updatedHTML += `
+                        <div class="${stateStyleCard}">
+                            <h3>Live Fleet Tracker</h3>
+                            <p>🚗 Registration No: <strong>${target.vehicle_reg}</strong></p>
+                            <p>⚠️ Condition: <strong>${target.status}</strong></p>
+                            <p>📋 Device Source ID: <code>${target.device_id}</code></p>
+                            <p>🛣️ Safe Route Traffic: <strong>${target.traffic_density}</strong></p>
+                            ${crashAlertLine}
+                        </div>
+                    `;
+                    }
+                }
+
+                container.innerHTML = updatedHTML;
+
+                let signalsHTML = "";
+                let bestSignalKey = null;
+                let lowestScore = Infinity;
+
+                for (const [key, sig] of Object.entries(signals)) {
+                    let statusText = "Clear";
+                    let badgeColor = "#2ecc71"; 
+                    let mapColor = "green";
+                    sig.score = sig.vehicles; 
+
+                    if (sig.isBlocked) {
+                        statusText = "🚨 CRITICAL (Accident)";
+                        badgeColor = "#e74c3c"; 
+                        mapColor = "red";
+                        sig.score = 9999; 
+                    } else if (sig.vehicles >= 3) {
+                        statusText = "High Vehicles";
+                        badgeColor = "#e67e22"; 
+                        mapColor = "orange";
+                        sig.score += 10;
+                    } else if (sig.vehicles >= 1) {
+                        statusText = "Moderate Traffic";
+                        badgeColor = "#f1c40f"; 
+                        mapColor = "#f1c40f";
+                    }
+
+                    if (sig.score < lowestScore) {
+                        lowestScore = sig.score;
+                        bestSignalKey = key;
+                    }
+
+                    if (!signalCircles[key]) {
+                        signalCircles[key] = L.circle([sig.lat, sig.lng], {
+                            radius: 60,
+                            weight: 2,
+                            fillOpacity: 0.35
+                        }).addTo(map);
+                    }
+                    signalCircles[key].setStyle({ color: mapColor, fillColor: mapColor });
+                    signalCircles[key].bindPopup(`<b>🚥 Junction: ${sig.name}</b><br>Active Traffic: ${sig.vehicles} Vehicles<br>Status: ${statusText}`);
+
+                    signalsHTML += `
+                    <div class="signal-row">
+                        <span>🚦 <b>${key}</b> (${sig.vehicles} Cars)</span>
+                        <span class="status-badge" style="background: ${badgeColor}; color: ${badgeColor === '#f1c40f' ? '#2c3e50' : 'white'};">${statusText}</span>
+                    </div>
+                `;
+                }
+
+                document.getElementById('signalStatusContainer').innerHTML = signalsHTML;
+
+                if (bestSignalKey) {
+                    document.getElementById('routeRecommendation').innerHTML = `🚀 Take Route via Signal ${bestSignalKey} (Clear Path)`;
+                    document.getElementById('routeRecommendation').style.color = "#2ecc71";
+                }
+
+                if (structuralCrashTrigger) {
+                    triggerWebBuzzer();
+                } else {
+                    silenceWebBuzzer();
+                }
+
+            } catch (error) {
+                console.error(error);
+            }
+        }, 1000);
+    </script>
+</body>
+
+</html>
